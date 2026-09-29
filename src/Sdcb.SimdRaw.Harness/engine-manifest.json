@@ -1,0 +1,36 @@
+{
+  "engines": {
+    "rawspeed": {
+      "version": "20260929_c835b05a",
+      "commit": "c835b05a",
+      "describe": "v3.5-2998-gc835b05a",
+      "source": "https://github.com/darktable-org/rawspeed/commit/c835b05a",
+      "builds": {
+        "win-x64": {
+          "library": {
+            "url": "https://cv-public.sdcb.ai/2026/rawspeed/20260929_c835b05a.dll",
+            "sha256": "e54626c02389daecd778a4e22bd083b05e26f47f2176d83969361ffe8fea9279",
+            "size": 1656320
+          },
+          "camerasXml": {
+            "url": "https://cv-public.sdcb.ai/2026/rawspeed/20260929_c835b05a.cameras.xml",
+            "sha256": "b4972d75c8f3adcf86e03c51cb37737c08f9a7b15f1b421270edf4a7ab7cd20c",
+            "size": 752889
+          }
+        },
+        "linux-x64": {
+          "library": {
+            "url": "https://cv-public.sdcb.ai/2026/rawspeed/20260929_c835b05a.so",
+            "sha256": "325cbbd1d83a7e22704dc336a68d21d7a2f1e853d1fbc29d6bb08b0538bc062b",
+            "size": 2256768
+          },
+          "camerasXml": {
+            "url": "https://cv-public.sdcb.ai/2026/rawspeed/20260929_c835b05a.cameras.xml",
+            "sha256": "b4972d75c8f3adcf86e03c51cb37737c08f9a7b15f1b421270edf4a7ab7cd20c",
+            "size": 752889
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Sdcb.SimdRaw.Harness</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsAotCompatible>true</IsAotCompatible>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Sdcb.SimdRaw\Sdcb.SimdRaw.csproj" />
+    <EmbeddedResource Include="engine-manifest.json" LogicalName="engine-manifest.json" />
+    <EmbeddedResource Include="known-diffs.tsv" LogicalName="known-diffs.tsv" />
+  </ItemGroup>
+
+</Project>

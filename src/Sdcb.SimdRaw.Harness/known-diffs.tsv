@@ -1,0 +1,4 @@
+engine	file	mosaic_sha256	reason
+# Reviewed engine-vs-golden_libraw differences that cannot be explained automatically (the engine's own golden
+# does not cover or does not match them). An entry only applies while the engine output hash is unchanged.
+rawspeed	phase_one_load_raw_c_Phase_One_IQ140_sample_files_04_Diciembre_2017_010_Sensor+_IIQ_L.TIF	093d43da587fc251fb333974bd673a30a140fc500c95dd90d26f8705d0a3714b	RawSpeed IIQ (IiqDecoder bad-column correction changed 2026-05; cameras.xml white 16383) differs from LibRaw phase_one_load_raw_c and from the older rstest golden (white 65535); output identical for x86-64 and x86-64-v3 builds
