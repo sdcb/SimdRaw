@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Sdcb.SimdRaw/Sdcb.SimdRaw.csproj" />
+    <Project Path="src/Sdcb.SimdRaw.Harness/Sdcb.SimdRaw.Harness.csproj" />
+  </Folder>
+</Solution>

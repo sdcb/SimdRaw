@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Sdcb.SimdRaw</RootNamespace>
+    <IsAotCompatible>true</IsAotCompatible>
+    <Description>Pure .NET, SIMD-accelerated RAW image decoder.</Description>
+  </PropertyGroup>
+
+</Project>

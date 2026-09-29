@@ -1,0 +1,11 @@
+bin/
+obj/
+.vs/
+*.user
+
+# fixture (cloned by the harness) and build/report outputs
+/testdata/
+/artifacts/
+/.engine-cache/
+/.fixture-key/
+.wrangler/
