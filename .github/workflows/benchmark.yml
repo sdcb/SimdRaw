@@ -1,0 +1,95 @@
+name: benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      verify:
+        description: Fixture verification (size | sample | full)
+        type: choice
+        options: [sample, size, full]
+        default: sample
+  schedule:
+    - cron: '0 19 * * *'
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      DOTNET_NOLOGO: 1
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      SIMDRAW_ENGINE_CACHE: ${{ github.workspace }}/.engine-cache
+      FIXTURE_DIR: ${{ github.workspace }}/testdata
+      REPORT_DIR: ${{ github.workspace }}/artifacts/reports
+      VERIFY: ${{ inputs.verify || 'sample' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Cache keys
+        id: keys
+        run: |
+          mkdir -p .fixture-key
+          curl -fsSL --retry 3 https://raw.githubusercontent.com/sdcb/Sdcb.LibRaw.TestData/HEAD/manifest.tsv -o .fixture-key/manifest.tsv
+          echo "engine=rawspeed-$(jq -r .engines.rawspeed.version src/Sdcb.SimdRaw.Harness/engine-manifest.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore fixture
+        uses: actions/cache@v6
+        with:
+          path: testdata
+          key: fixture-${{ runner.os }}-${{ hashFiles('.fixture-key/manifest.tsv') }}
+
+      - name: Restore engine binaries
+        uses: actions/cache@v6
+        with:
+          path: .engine-cache
+          key: engines-${{ runner.os }}-${{ steps.keys.outputs.engine }}
+
+      - name: Build
+        run: dotnet build src/Sdcb.SimdRaw.Harness -c Release
+
+      - name: Benchmark rawspeed
+        run: >
+          dotnet run -c Release --no-build --project src/Sdcb.SimdRaw.Harness --
+          --engine rawspeed --data "$FIXTURE_DIR" --out "$REPORT_DIR" --verify "$VERIFY"
+
+      - name: Benchmark simdraw
+        if: success() || failure()
+        # SimdRaw decoders are stubs for now: every file is "unsupported", never gating.
+        continue-on-error: true
+        run: >
+          dotnet run -c Release --no-build --project src/Sdcb.SimdRaw.Harness --
+          --engine simdraw --data "$FIXTURE_DIR" --out "$REPORT_DIR" --verify size
+
+      - name: Job summary
+        if: always()
+        run: |
+          shopt -s nullglob
+          for f in "$REPORT_DIR"/report-*.md; do cat "$f" >> "$GITHUB_STEP_SUMMARY"; echo >> "$GITHUB_STEP_SUMMARY"; done
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reports-${{ matrix.os }}
+          path: artifacts/reports
+          if-no-files-found: warn
