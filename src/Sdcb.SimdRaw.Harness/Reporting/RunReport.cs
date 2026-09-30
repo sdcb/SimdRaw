@@ -31,7 +31,9 @@ public static class FileStatus
 
 public sealed class RunReport
 {
-    public int SchemaVersion { get; init; } = 1;
+    public int SchemaVersion { get; init; } = 3;
+    /// <summary>File stem shared by the .json / .md report and the PPM directory.</summary>
+    public required string RunId { get; init; }
     public required string Engine { get; init; }
     public required string EngineVersion { get; init; }
     public required DateTimeOffset GeneratedAt { get; init; }
@@ -79,6 +81,8 @@ public sealed class FileRecord
     public string? ErrorCode { get; init; }
     public string? ErrorMessage { get; init; }
     public double? DecodeTimeMs { get; init; }
+    /// <summary>JIT time inside <see cref="DecodeTimeMs"/> (managed engines; cold run).</summary>
+    public double? DecodeJitMs { get; init; }
     public double? EngineTotalTimeMs { get; init; }
     public required double WallTimeMs { get; init; }
     public required string HashAlgorithm { get; init; }
@@ -93,7 +97,41 @@ public sealed class FileRecord
     public required long PeakWorkingSetDeltaBytes { get; init; }
     public required long WorkingSetAfterBytes { get; init; }
     public required long GcTotalMemoryDeltaBytes { get; init; }
+    /// <summary>Managed bytes allocated on the decode thread (native buffers are not included).</summary>
     public required long AllocatedBytes { get; init; }
+    /// <summary>Garbage collections (any generation) that happened during the decode; the harness never induces one.</summary>
+    public required int GcCollections { get; init; }
+    /// <summary>Develop stage on the decoded mosaic; null when the engine has no develop stage, develop is off or
+    /// decoding failed.</summary>
+    public DevelopRecord? Develop { get; init; }
+}
+
+/// <summary>Mosaic → RGB for one file. Memory is relative to the working set right before develop (the decoded
+/// mosaic and the file bytes are already resident), i.e. what develop adds.</summary>
+public sealed class DevelopRecord
+{
+    public required string Status { get; init; }
+    public string? ErrorCode { get; init; }
+    public string? ErrorMessage { get; init; }
+    public double? TimeMs { get; init; }
+    public double? JitMs { get; init; }
+    public required double WallTimeMs { get; init; }
+    public string? Sha256 { get; init; }
+    public int Width { get; init; }
+    public int Height { get; init; }
+    public string? PixelFormat { get; init; }
+    /// <summary>PPM path relative to the report directory.</summary>
+    public string? Ppm { get; init; }
+    public required long PeakWorkingSetDeltaBytes { get; init; }
+    public required long GcTotalMemoryDeltaBytes { get; init; }
+    /// <summary>Managed bytes allocated on the develop thread (native buffers are not included).</summary>
+    public required long AllocatedBytes { get; init; }
+    public required int GcCollections { get; init; }
+}
+
+public static class DevelopStatuses
+{
+    public static bool IsGating(DevelopRecord? d) => d?.Status == Engines.DevelopStatus.Error;
 }
 
 public sealed class TimeStats
@@ -161,6 +199,13 @@ public sealed class RunSummary
     public string? EngineOracleColumn { get; init; }
     public required int EngineOracleMatch { get; init; }
     public required int EngineOracleMismatch { get; init; }
+    /// <summary><c>on</c>, <c>off</c> (disabled by option) or <c>n/a</c> (engine has no develop stage).</summary>
+    public required string DevelopMode { get; init; }
+    public required int Developed { get; init; }
+    public required int DevelopUnsupported { get; init; }
+    public required int DevelopErrors { get; init; }
+    public TimeStats? DevelopMs { get; init; }
+    public required long MaxDevelopPeakWorkingSetDeltaBytes { get; init; }
 }
 
 public sealed class PathGroup

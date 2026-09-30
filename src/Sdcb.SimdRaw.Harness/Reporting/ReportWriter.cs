@@ -10,7 +10,7 @@ public static class ReportWriter
     public static (string Json, string Markdown) Write(RunReport report, string outDir)
     {
         Directory.CreateDirectory(outDir);
-        string stem = $"report-{report.Engine}-{report.GeneratedAt.UtcDateTime:yyyyMMdd'T'HHmmss'Z'}";
+        string stem = report.RunId;
         string json = Path.Combine(outDir, stem + ".json");
         string md = Path.Combine(outDir, stem + ".md");
         File.WriteAllText(json, JsonSerializer.Serialize(report, ReportJsonContext.Default.RunReport));
@@ -70,7 +70,15 @@ public static class ReportWriter
         {
             sb.AppendLine($"- Engine self-check vs `{oracleColumn}`: {s.EngineOracleMatch} match / {s.EngineOracleMismatch} mismatch");
         }
-        sb.AppendLine($"- Gate: {(c.Fail + c.Error == 0 ? "**PASS** (no `fail` / `error`)" : $"**FAIL** ({c.Fail} fail, {c.Error} error)")}");
+        int gatingCount = c.Fail + c.Error + s.DevelopErrors;
+        sb.AppendLine($"- Gate: {(gatingCount == 0 ? "**PASS** (no `fail` / `error`, no develop error)" : $"**FAIL** ({c.Fail} fail, {c.Error} error, {s.DevelopErrors} develop error)")}");
+        sb.AppendLine(s.DevelopMode switch
+        {
+            "on" => $"- Develop (mosaic → sRGB): {s.Developed} ok, {s.DevelopUnsupported} unsupported, {s.DevelopErrors} error"
+                + (s.DevelopMs is { } dm ? $"; mean {F(dm.Mean)} ms, total {F(dm.Total)} ms; max peak ΔWS {Mb(s.MaxDevelopPeakWorkingSetDeltaBytes)} MB" : ""),
+            "off" => "- Develop: disabled (`--develop off`)",
+            _ => "- Develop: engine has no develop stage, skipped",
+        });
         sb.AppendLine($"- Decode time is engine-reported (pure decode, no IO / init); ΔWS is per-file peak working set minus the post-init baseline {Mb(r.BaselineWorkingSetBytes)} MB ({r.PeakMethod})");
         if (s.EngineTotalMs is { } t)
         {
@@ -90,23 +98,53 @@ public static class ReportWriter
 
         sb.AppendLine("## Per file");
         sb.AppendLine();
-        sb.AppendLine("| # | file | status | decode ms | engine buffer | LibRaw buffer | peak ΔWS MB | GC Δ MB | engine golden |");
-        sb.AppendLine("| ---: | --- | --- | ---: | --- | --- | ---: | ---: | --- |");
+        sb.AppendLine("| # | file | status | decode ms | of which JIT ms | engine buffer | LibRaw buffer | peak ΔWS MB | managed alloc MB | GCs | engine golden |");
+        sb.AppendLine("| ---: | --- | --- | ---: | ---: | --- | --- | ---: | ---: | ---: | --- |");
         foreach (FileRecord f in r.Files)
         {
-            sb.AppendLine($"| {f.Index} | `{f.File}` | {f.Status} | {F(f.DecodeTimeMs)} | {Layout(f.Layout)} | {f.LibRawGeometry?.ToString() ?? "—"} "
-                + $"| {Mb(f.PeakWorkingSetDeltaBytes)} | {Mb(f.GcTotalMemoryDeltaBytes)} | {f.EngineOracle?.Status ?? "—"} |");
+            sb.AppendLine($"| {f.Index} | `{f.File}` | {f.Status} | {F(f.DecodeTimeMs)} | {F(f.DecodeJitMs)} | {Layout(f.Layout)} | {f.LibRawGeometry?.ToString() ?? "—"} "
+                + $"| {Mb(f.PeakWorkingSetDeltaBytes)} | {Mb(f.AllocatedBytes)} | {f.GcCollections} | {f.EngineOracle?.Status ?? "—"} |");
         }
         sb.AppendLine();
 
-        List<FileRecord> gating = [.. r.Files.Where(f => FileStatus.IsGating(f.Status))];
+        List<FileRecord> developed = [.. r.Files.Where(f => f.Develop is not null)];
+        if (developed.Count > 0)
+        {
+            sb.AppendLine("## Develop");
+            sb.AppendLine();
+            sb.AppendLine("Mosaic → sRGB on the decoded mosaic: crop to the active area, black level, white balance, bilinear demosaic, "
+                + "camera → sRGB matrix, sRGB gamma; default output `Rgb48`. Timed separately from decode. There is no external golden: "
+                + "the hash is compared across ISA tiers (`--isa-matrix`), the PPM is for visual inspection. ΔWS is relative to the "
+                + "working set right before develop (mosaic already resident).");
+            sb.AppendLine();
+            sb.AppendLine("| # | file | status | develop ms | of which JIT ms | output | peak ΔWS MB | managed alloc MB | GCs | sha256 | PPM |");
+            sb.AppendLine("| ---: | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | --- | --- |");
+            foreach (FileRecord f in developed)
+            {
+                DevelopRecord d = f.Develop!;
+                string output = d.Status == Engines.DevelopStatus.Ok ? $"{d.Width}x{d.Height} {d.PixelFormat}" : Esc(d.ErrorMessage ?? d.ErrorCode ?? "");
+                string ppm = d.Ppm is null ? "—" : $"[{Path.GetFileName(d.Ppm)}]({d.Ppm.Replace('\\', '/').Replace(" ", "%20")})";
+                sb.AppendLine($"| {f.Index} | `{f.File}` | {d.Status} | {F(d.TimeMs)} | {F(d.JitMs)} | {output} | {Mb(d.PeakWorkingSetDeltaBytes)} "
+                    + $"| {Mb(d.AllocatedBytes)} | {d.GcCollections} | {(d.Sha256 is null ? "—" : $"`{d.Sha256}`")} | {ppm} |");
+            }
+            sb.AppendLine();
+        }
+
+        List<FileRecord> gating = [.. r.Files.Where(f => FileStatus.IsGating(f.Status) || DevelopStatuses.IsGating(f.Develop))];
         sb.AppendLine("## Failures");
         sb.AppendLine();
         if (gating.Count == 0) sb.AppendLine("None.");
         foreach (FileRecord f in gating)
         {
-            sb.AppendLine($"- `{f.File}` ({f.DecodePath}) **{f.Status}**: {Esc(f.Note ?? f.ErrorMessage ?? f.ErrorCode ?? "")}"
-                + (f.MosaicHash is null ? "" : $" — got `{f.MosaicHash}`, golden `{f.GoldenLibRaw}`"));
+            if (FileStatus.IsGating(f.Status))
+            {
+                sb.AppendLine($"- `{f.File}` ({f.DecodePath}) **{f.Status}**: {Esc(f.Note ?? f.ErrorMessage ?? f.ErrorCode ?? "")}"
+                    + (f.MosaicHash is null ? "" : $" — got `{f.MosaicHash}`, golden `{f.GoldenLibRaw}`"));
+            }
+            if (DevelopStatuses.IsGating(f.Develop))
+            {
+                sb.AppendLine($"- `{f.File}` ({f.DecodePath}) **develop error**: {Esc(f.Develop!.ErrorMessage ?? f.Develop.ErrorCode ?? "")}");
+            }
         }
         sb.AppendLine();
 

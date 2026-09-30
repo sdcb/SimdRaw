@@ -25,13 +25,20 @@ public static class Program
           --out <dir>         report directory (default: <repo>/artifacts/reports)
           --filter <glob>     only files whose name or decode path matches (e.g. "sony_*", "*.NEF")
           --verify <mode>     fixture check: size | sample (default) | full
+          --develop <on|off>  also develop every decoded file (mosaic → sRGB), timed separately (default on;
+                              engines without a develop stage skip it)
+          --ppm <8|16|off>    write developed images as PPM next to the report (default 8)
+          --isa-matrix <tiers>
+                              simdraw only: run once per ISA tier, each in a fresh process, and require identical
+                              mosaic and develop hashes; tiers: default, no-avx512, no-avx2, no-hwintrinsic
+                              (e.g. "default,no-avx2,no-hwintrinsic"); PPMs are written for the first tier only
 
         Environment:
           SIMDRAW_ENGINE_CACHE           engine binary cache (default %LOCALAPPDATA%/simdraw-engines, ~/.cache/simdraw-engines)
           SIMDRAW_RAWSPEED_LIB           use a local rawspeed shim instead of the pinned download
           SIMDRAW_RAWSPEED_CAMERAS_XML   cameras.xml for SIMDRAW_RAWSPEED_LIB (default: next to the library)
 
-        Exit codes: 0 ok, 1 any fail/error file, 2 usage, 3 setup (fixture/engine) failure.
+        Exit codes: 0 ok, 1 any fail/error file, develop error or ISA-tier hash mismatch, 2 usage, 3 setup failure.
         """;
 
     public static async Task<int> Main(string[] args)
@@ -66,11 +73,21 @@ public static class Program
             return ExitUsage;
         }
 
+        if (options.IsaMatrix is { } tiers)
+        {
+            List<string> childArgs = ["--engine", options.Engine, "--data", options.DataDir, "--out", options.OutDir,
+                "--verify", "size", "--develop", options.Develop ? "on" : "off"];
+            if (options.Filter is not null) childArgs.AddRange(["--filter", options.Filter]);
+            return IsaMatrix.Run(tiers, childArgs, options.OutDir, options.Filter, options.PpmBits, GitSha(), log);
+        }
+
         using IDecodeEngine engine = CreateEngine(options.Engine, log);
+        string runId = options.RunId ?? $"report-{options.Engine}-{DateTime.UtcNow:yyyyMMdd'T'HHmmss'Z'}";
+        RunSettings settings = new(runId, options.OutDir, options.Develop, options.PpmBits);
         RunReport report;
         try
         {
-            report = await new BenchmarkRunner(engine, fixture, entries, LoadKnownDiffs(), log).RunAsync(GitSha(), options.Filter, cts.Token);
+            report = await new BenchmarkRunner(engine, fixture, entries, LoadKnownDiffs(), settings, log).RunAsync(GitSha(), options.Filter, cts.Token);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -85,9 +102,14 @@ public static class Program
         {
             log.WriteLine($"decode ms: mean {t.Mean:F2} · median {t.Median:F2} · P95 {t.P95:F2} · total {t.Total:F1} · init {report.Init.TotalMs:F1}");
         }
+        if (report.Summary.DevelopMode == "on")
+        {
+            log.WriteLine($"develop: {report.Summary.Developed} ok · {report.Summary.DevelopUnsupported} unsupported · {report.Summary.DevelopErrors} error"
+                + (report.Summary.DevelopMs is { } dm ? $" · mean {dm.Mean:F2} ms · total {dm.Total:F1} ms" : ""));
+        }
         log.WriteLine($"report: {json}");
         log.WriteLine($"report: {md}");
-        return c.Fail + c.Error > 0 ? ExitGateFailed : ExitOk;
+        return c.Fail + c.Error + report.Summary.DevelopErrors > 0 ? ExitGateFailed : ExitOk;
     }
 
     private static IDecodeEngine CreateEngine(string name, TextWriter log) => name switch
@@ -113,14 +135,18 @@ public static class Program
         return [.. entries.Where(e => re.IsMatch(e.File) || re.IsMatch(e.DecodePath))];
     }
 
-    private sealed record Options(string Engine, string DataDir, string OutDir, string? Filter, FixtureVerifyMode Verify);
+    private sealed record Options(string Engine, string DataDir, string OutDir, string? Filter, FixtureVerifyMode Verify,
+        bool Develop, int PpmBits, List<IsaTier>? IsaMatrix, string? RunId);
 
     private static bool TryParse(string[] args, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out Options? options, out string? error)
     {
         options = null;
         error = null;
-        string? engine = null, data = null, output = null, filter = null;
+        string? engine = null, data = null, output = null, filter = null, runId = null;
         FixtureVerifyMode verify = FixtureVerifyMode.Sample;
+        bool develop = true;
+        int ppmBits = 8;
+        List<IsaTier>? tiers = null;
         for (int i = 0; i < args.Length; i++)
         {
             string arg = args[i];
@@ -144,6 +170,29 @@ public static class Program
                         return false;
                     }
                     break;
+                case "--develop":
+                    if (value is not ("on" or "off"))
+                    {
+                        error = $"--develop expects on|off, got '{value}'.";
+                        return false;
+                    }
+                    develop = value == "on";
+                    break;
+                case "--ppm":
+                    ppmBits = value switch { "8" => 8, "16" => 16, "off" => 0, _ => -1 };
+                    if (ppmBits < 0)
+                    {
+                        error = $"--ppm expects 8|16|off, got '{value}'.";
+                        return false;
+                    }
+                    break;
+                case "--isa-matrix":
+                    if (!IsaTier.TryParseList(value, out List<IsaTier> parsed, out error)) return false;
+                    tiers = parsed;
+                    break;
+                case "--run-id":
+                    runId = value;
+                    break;
                 default:
                     error = $"Unknown option {arg}.";
                     return false;
@@ -155,6 +204,11 @@ public static class Program
             error = engine is null ? "--engine is required." : $"Unknown engine '{engine}'.";
             return false;
         }
+        if (tiers is not null && engine != "simdraw")
+        {
+            error = "--isa-matrix only applies to --engine simdraw (RawSpeed is a prebuilt native library).";
+            return false;
+        }
 
         string root = RepoRoot();
         options = new Options(
@@ -162,7 +216,11 @@ public static class Program
             Path.GetFullPath(data ?? Path.Combine(root, "testdata")),
             Path.GetFullPath(output ?? Path.Combine(root, "artifacts", "reports")),
             filter,
-            verify);
+            verify,
+            develop,
+            ppmBits,
+            tiers,
+            runId);
         return true;
     }
 

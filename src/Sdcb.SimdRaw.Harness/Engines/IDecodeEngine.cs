@@ -23,6 +23,42 @@ public interface IEngineDiagnostics
 
 public sealed record InitPhase(string Name, double Ms);
 
+/// <summary>Engines with a develop stage (mosaic → RGB). Operates on the mosaic of the most recent successful
+/// <see cref="IDecodeEngine.DecodeAsync"/>, which the engine keeps until <see cref="ReleaseDecoded"/>.</summary>
+public interface IDevelopEngine
+{
+    /// <param name="ppm">When set, the developed image is also written as binary PPM (after timing).</param>
+    DevelopResult DevelopDecoded(PpmRequest? ppm, CancellationToken ct);
+
+    void ReleaseDecoded();
+}
+
+/// <param name="Bits">8 or 16 bits per channel.</param>
+public sealed record PpmRequest(string Path, int Bits);
+
+/// <param name="Status"><c>ok</c>, <c>unsupported</c> or <c>error</c>.</param>
+/// <param name="TimeMs">Engine-reported develop time (mosaic → RGB buffer).</param>
+/// <param name="Sha256">SHA-256 of the output buffer, rows packed.</param>
+public sealed record DevelopResult(string Status, double TimeMs, string? Sha256)
+{
+    public string? ErrorCode { get; init; }
+    public string? ErrorMessage { get; init; }
+    public int Width { get; init; }
+    public int Height { get; init; }
+    public string? PixelFormat { get; init; }
+    public double? JitMs { get; init; }
+
+    public static DevelopResult Failed(string status, string errorCode, string message) =>
+        new(status, 0, null) { ErrorCode = errorCode, ErrorMessage = message };
+}
+
+public static class DevelopStatus
+{
+    public const string Ok = "ok";
+    public const string Unsupported = "unsupported";
+    public const string Error = "error";
+}
+
 /// <summary>Engines that have their own golden column in manifest.tsv (RawSpeed: rstest hashes in
 /// <c>golden_rawspeed</c>). A value of <c>unsupported</c> there means the engine is known not to decode the file.</summary>
 public interface ISelfOracleEngine
@@ -53,6 +89,9 @@ public sealed record DecodeResult(
 
     /// <summary>Engine-side time including container parsing and metadata, when reported.</summary>
     public double? EngineTotalTimeMs { get; init; }
+
+    /// <summary>JIT compilation time on the decoding thread during the timed decode (managed engines only).</summary>
+    public double? JitMs { get; init; }
 
     public static DecodeResult Failed(string errorCode, string message) =>
         new(false, errorCode, 0, null, HashAlgorithms.Sha256) { ErrorMessage = message };

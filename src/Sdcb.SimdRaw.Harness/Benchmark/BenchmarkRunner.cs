@@ -5,8 +5,16 @@ using Sdcb.SimdRaw.Harness.Reporting;
 
 namespace Sdcb.SimdRaw.Harness.Benchmark;
 
+/// <param name="RunId">Report file stem; PPMs go to <c>&lt;OutDir&gt;/&lt;RunId&gt;-ppm/</c>.</param>
+/// <param name="PpmBits">0 (no PPM), 8 or 16.</param>
+public sealed record RunSettings(string RunId, string OutDir, bool Develop, int PpmBits)
+{
+    public string PpmDirName => RunId + "-ppm";
+}
+
 /// <summary>Cold, single pass over the fixture: no warmup, no repetitions.</summary>
-public sealed class BenchmarkRunner(IDecodeEngine engine, Fixture fixture, IReadOnlyList<ManifestEntry> entries, IReadOnlyList<KnownDiff> knownDiffs, TextWriter console)
+public sealed class BenchmarkRunner(IDecodeEngine engine, Fixture fixture, IReadOnlyList<ManifestEntry> entries, IReadOnlyList<KnownDiff> knownDiffs,
+    RunSettings settings, TextWriter console)
 {
     private readonly Classifier _classifier = new(engine as ISelfOracleEngine, knownDiffs, engine.Name);
 
@@ -22,9 +30,6 @@ public sealed class BenchmarkRunner(IDecodeEngine engine, Fixture fixture, IRead
             console.WriteLine($"         {phase.Name,-18} {phase.Ms,10:F2} ms");
         }
 
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        GC.Collect();
         long baseline = ProcessMemory.CurrentWorkingSet();
         console.WriteLine($"[memory] baseline working set {Mb(baseline):F1} MB ({ProcessMemory.PeakMethod})");
         console.WriteLine();
@@ -45,6 +50,7 @@ public sealed class BenchmarkRunner(IDecodeEngine engine, Fixture fixture, IRead
 
         return new RunReport
         {
+            RunId = settings.RunId,
             Engine = engine.Name,
             EngineVersion = engine.Version,
             GeneratedAt = DateTimeOffset.Now,
@@ -74,6 +80,7 @@ public sealed class BenchmarkRunner(IDecodeEngine engine, Fixture fixture, IRead
         long peakBefore = ProcessMemory.PeakWorkingSet();
         long gcBefore = GC.GetTotalMemory(false);
         long allocBefore = GC.GetAllocatedBytesForCurrentThread();
+        int collectionsBefore = GC.CollectionCount(0);
         sampler.Begin();
         long start = Stopwatch.GetTimestamp();
 
@@ -89,6 +96,7 @@ public sealed class BenchmarkRunner(IDecodeEngine engine, Fixture fixture, IRead
 
         double wallMs = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
         long sampledPeak = sampler.End();
+        int collections = GC.CollectionCount(0) - collectionsBefore;
         long allocated = GC.GetAllocatedBytesForCurrentThread() - allocBefore;
         long gcDelta = GC.GetTotalMemory(false) - gcBefore;
         long peakAfter = ProcessMemory.PeakWorkingSet();
@@ -97,6 +105,19 @@ public sealed class BenchmarkRunner(IDecodeEngine engine, Fixture fixture, IRead
 
         fixture.LibRawGeometry.TryGetValue(entry.File, out LibRawGeometry? libraw);
         (string status, string? note, OracleCheck? oracle) = _classifier.Classify(entry, libraw, result);
+
+        DevelopRecord? develop = null;
+        if (engine is IDevelopEngine developer)
+        {
+            try
+            {
+                if (settings.Develop && result.Success) develop = RunDevelop(developer, entry, sampler, ct);
+            }
+            finally
+            {
+                developer.ReleaseDecoded();
+            }
+        }
 
         return new FileRecord
         {
@@ -108,6 +129,7 @@ public sealed class BenchmarkRunner(IDecodeEngine engine, Fixture fixture, IRead
             ErrorCode = result.ErrorCode,
             ErrorMessage = result.ErrorMessage,
             DecodeTimeMs = result.Success ? result.DecodeTimeMs : null,
+            DecodeJitMs = result.Success ? result.JitMs : null,
             EngineTotalTimeMs = result.EngineTotalTimeMs,
             WallTimeMs = wallMs,
             HashAlgorithm = result.HashAlgorithm,
@@ -122,6 +144,60 @@ public sealed class BenchmarkRunner(IDecodeEngine engine, Fixture fixture, IRead
             WorkingSetAfterBytes = wsAfter,
             GcTotalMemoryDeltaBytes = gcDelta,
             AllocatedBytes = allocated,
+            GcCollections = collections,
+            Develop = develop,
+        };
+    }
+
+    private DevelopRecord RunDevelop(IDevelopEngine developer, ManifestEntry entry, WorkingSetSampler sampler, CancellationToken ct)
+    {
+        string? ppmRelative = settings.PpmBits > 0 ? Path.Combine(settings.PpmDirName, FixturePaths.Sanitize(entry.File) + ".ppm") : null;
+        PpmRequest? ppm = ppmRelative is null ? null : new PpmRequest(Path.Combine(settings.OutDir, ppmRelative), settings.PpmBits);
+
+        bool exactPeak = ProcessMemory.TryResetPeak();
+        long before = ProcessMemory.CurrentWorkingSet();
+        long peakBefore = ProcessMemory.PeakWorkingSet();
+        long gcBefore = GC.GetTotalMemory(false);
+        long allocBefore = GC.GetAllocatedBytesForCurrentThread();
+        int collectionsBefore = GC.CollectionCount(0);
+        sampler.Begin();
+        long start = Stopwatch.GetTimestamp();
+
+        DevelopResult d;
+        try
+        {
+            d = developer.DevelopDecoded(ppm, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            d = DevelopResult.Failed(DevelopStatus.Error, DecodeErrorCodes.Internal, ex.ToString());
+        }
+
+        double wallMs = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        long sampledPeak = sampler.End();
+        int collections = GC.CollectionCount(0) - collectionsBefore;
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - allocBefore;
+        long gcDelta = GC.GetTotalMemory(false) - gcBefore;
+        long peakAfter = ProcessMemory.PeakWorkingSet();
+        long peak = exactPeak || peakAfter > peakBefore ? Math.Max(peakAfter, sampledPeak) : sampledPeak;
+        bool ok = d.Status == DevelopStatus.Ok;
+        return new DevelopRecord
+        {
+            Status = d.Status,
+            ErrorCode = d.ErrorCode,
+            ErrorMessage = d.ErrorMessage,
+            TimeMs = ok ? d.TimeMs : null,
+            JitMs = ok ? d.JitMs : null,
+            WallTimeMs = wallMs,
+            Sha256 = d.Sha256,
+            Width = d.Width,
+            Height = d.Height,
+            PixelFormat = d.PixelFormat,
+            Ppm = ok ? ppmRelative : null,
+            PeakWorkingSetDeltaBytes = Math.Max(0, peak - before),
+            GcTotalMemoryDeltaBytes = gcDelta,
+            AllocatedBytes = allocated,
+            GcCollections = collections,
         };
     }
 
@@ -129,8 +205,15 @@ public sealed class BenchmarkRunner(IDecodeEngine engine, Fixture fixture, IRead
     {
         StatusCounts counts = new();
         foreach (FileRecord r in records) counts.Add(r.Status);
+        List<DevelopRecord> developed = [.. records.Select(r => r.Develop).OfType<DevelopRecord>()];
         return new RunSummary
         {
+            DevelopMode = engine is IDevelopEngine ? settings.Develop ? "on" : "off" : "n/a",
+            Developed = developed.Count(d => d.Status == DevelopStatus.Ok),
+            DevelopUnsupported = developed.Count(d => d.Status == DevelopStatus.Unsupported),
+            DevelopErrors = developed.Count(d => d.Status == DevelopStatus.Error),
+            DevelopMs = TimeStats.From(developed.Where(d => d.TimeMs.HasValue).Select(d => d.TimeMs!.Value)),
+            MaxDevelopPeakWorkingSetDeltaBytes = developed.Count == 0 ? 0 : developed.Max(d => d.PeakWorkingSetDeltaBytes),
             Files = records.Count,
             Status = counts,
             Decoded = records.Count(r => r.DecodeTimeMs.HasValue),
@@ -166,22 +249,27 @@ public sealed class BenchmarkRunner(IDecodeEngine engine, Fixture fixture, IRead
 
 internal sealed class ConsoleTable(TextWriter w)
 {
-    private const string Format = "{0,3}  {1,-58}  {2,-12}  {3,10}  {4,-14}  {5,10}";
+    private const string Format = "{0,3}  {1,-58}  {2,-12}  {3,10}  {4,-14}  {5,10}  {6,11}";
 
     public void WriteHeader()
     {
-        w.WriteLine(Format, "#", "file", "status", "decode ms", "dims", "peak ΔMB");
-        w.WriteLine(new string('-', 3 + 2 + 58 + 2 + 12 + 2 + 10 + 2 + 14 + 2 + 10));
+        w.WriteLine(Format, "#", "file", "status", "decode ms", "dims", "peak ΔMB", "develop ms");
+        w.WriteLine(new string('-', 3 + 2 + 58 + 2 + 12 + 2 + 10 + 2 + 14 + 2 + 10 + 2 + 11));
     }
 
     public void WriteRow(FileRecord r)
     {
         string dims = r.Layout is { } l ? $"{l.Width}x{l.Height}x{l.Components}" : "-";
         string ms = r.DecodeTimeMs is { } d ? d.ToString("F2") : "-";
-        w.WriteLine(Format, r.Index, Truncate(r.File, 58), r.Status, ms, dims, BenchmarkRunner.Mb(r.PeakWorkingSetDeltaBytes).ToString("F1"));
+        string dev = r.Develop is null ? "-" : r.Develop.TimeMs is { } t ? t.ToString("F2") : r.Develop.Status;
+        w.WriteLine(Format, r.Index, Truncate(r.File, 58), r.Status, ms, dims, BenchmarkRunner.Mb(r.PeakWorkingSetDeltaBytes).ToString("F1"), dev);
         if (r.Status != FileStatus.Pass && (r.ErrorMessage ?? r.Note) is { } detail)
         {
             w.WriteLine($"     └ {r.ErrorCode ?? r.Status}: {Truncate(detail.ReplaceLineEndings(" "), 110)}");
+        }
+        if (r.Develop is { Status: not DevelopStatus.Ok } failed)
+        {
+            w.WriteLine($"     └ develop {failed.ErrorCode ?? failed.Status}: {Truncate((failed.ErrorMessage ?? "").ReplaceLineEndings(" "), 102)}");
         }
     }
 
