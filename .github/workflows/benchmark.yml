@@ -65,26 +65,31 @@ jobs:
           key: engines-${{ runner.os }}-${{ steps.keys.outputs.engine }}
 
       - name: Build
-        run: dotnet build src/Sdcb.SimdRaw.Harness -c Release
+        run: dotnet build SimdRaw.slnx -c Release
+
+      - name: Kernel tests
+        run: dotnet test tests/Sdcb.SimdRaw.Tests -c Release --no-build
 
       - name: Benchmark rawspeed
         run: >
           dotnet run -c Release --no-build --project src/Sdcb.SimdRaw.Harness --
           --engine rawspeed --data "$FIXTURE_DIR" --out "$REPORT_DIR" --verify "$VERIFY"
 
-      - name: Benchmark simdraw
+      - name: Benchmark simdraw (ISA matrix)
         if: success() || failure()
-        # SimdRaw decoders are stubs for now: every file is "unsupported", never gating.
-        continue-on-error: true
+        # One cold process per tier; fails on fail/error files, develop errors or any cross-tier hash difference.
         run: >
           dotnet run -c Release --no-build --project src/Sdcb.SimdRaw.Harness --
-          --engine simdraw --data "$FIXTURE_DIR" --out "$REPORT_DIR" --verify size
+          --engine simdraw --data "$FIXTURE_DIR" --out "$REPORT_DIR" --verify size --ppm off
+          --isa-matrix default,no-avx2,no-hwintrinsic
 
       - name: Job summary
         if: always()
         run: |
           shopt -s nullglob
-          for f in "$REPORT_DIR"/report-*.md; do cat "$f" >> "$GITHUB_STEP_SUMMARY"; echo >> "$GITHUB_STEP_SUMMARY"; done
+          for f in "$REPORT_DIR"/isa-matrix-*.md "$REPORT_DIR"/report-simdraw-*-default.md "$REPORT_DIR"/report-rawspeed-*.md; do
+            cat "$f" >> "$GITHUB_STEP_SUMMARY"; echo >> "$GITHUB_STEP_SUMMARY"
+          done
 
       - name: Upload reports
         if: always()
