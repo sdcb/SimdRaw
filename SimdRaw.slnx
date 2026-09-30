@@ -3,4 +3,7 @@
     <Project Path="src/Sdcb.SimdRaw/Sdcb.SimdRaw.csproj" />
     <Project Path="src/Sdcb.SimdRaw.Harness/Sdcb.SimdRaw.Harness.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Sdcb.SimdRaw.Tests/Sdcb.SimdRaw.Tests.csproj" />
+  </Folder>
 </Solution>
