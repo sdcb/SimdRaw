@@ -3,7 +3,12 @@
   <PropertyGroup>
     <RootNamespace>Sdcb.SimdRaw</RootNamespace>
     <IsAotCompatible>true</IsAotCompatible>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Description>Pure .NET, SIMD-accelerated RAW image decoder.</Description>
   </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Sdcb.SimdRaw.Tests" />
+  </ItemGroup>
 
 </Project>

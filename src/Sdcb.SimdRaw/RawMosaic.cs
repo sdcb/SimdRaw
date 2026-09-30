@@ -1,12 +1,19 @@
 namespace Sdcb.SimdRaw;
 
 /// <summary>Decoded raw mosaic. Buffer is u16, row-major; <see cref="Stride"/> is in elements.
-/// When <see cref="PlaneCount"/> &gt; 1 the planes are stored contiguously, <see cref="PlaneStride"/> apart.</summary>
+/// When <see cref="PlaneCount"/> &gt; 1 the planes are stored contiguously, <see cref="PlaneStride"/> apart.
+/// The buffer is native memory released by <see cref="Dispose"/>; spans obtained earlier must not be used afterwards.</summary>
 public sealed class RawMosaic : IDisposable
 {
-    private ushort[]? _buffer;
+    private NativeBuffer<ushort>? _buffer;
 
     public RawMosaic(int width, int height, int stride, int planeCount, RawRect activeArea, ushort blackLevel, ushort whiteLevel)
+        : this(width, height, stride, planeCount, activeArea, blackLevel, whiteLevel, uninitialized: false)
+    {
+    }
+
+    /// <param name="uninitialized">The decoder writes every element itself.</param>
+    internal RawMosaic(int width, int height, int stride, int planeCount, RawRect activeArea, ushort blackLevel, ushort whiteLevel, bool uninitialized)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(width);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(height);
@@ -20,7 +27,8 @@ public sealed class RawMosaic : IDisposable
         ActiveArea = activeArea;
         BlackLevel = blackLevel;
         WhiteLevel = whiteLevel;
-        _buffer = new ushort[checked(PlaneStride * planeCount)];
+        int length = checked(PlaneStride * planeCount);
+        _buffer = new NativeBuffer<ushort>(length, zero: !uninitialized);
     }
 
     /// <summary>Raw sensor width including masked edges.</summary>
@@ -33,8 +41,11 @@ public sealed class RawMosaic : IDisposable
     public ushort BlackLevel { get; }
     public ushort WhiteLevel { get; }
 
+    /// <summary>Colour filter layout of a single-plane mosaic, relative to buffer position (0, 0).</summary>
+    public RawCfaPattern CfaPattern { get; init; } = RawCfaPattern.Rggb;
+
     /// <summary>Full backing buffer (PlaneStride * PlaneCount elements).</summary>
-    public Memory<ushort> Buffer => _buffer ?? throw new ObjectDisposedException(nameof(RawMosaic));
+    public Memory<ushort> Buffer => _buffer?.Memory ?? throw new ObjectDisposedException(nameof(RawMosaic));
 
     public Span<ushort> Plane(int i)
     {
@@ -45,5 +56,9 @@ public sealed class RawMosaic : IDisposable
 
     public Span<ushort> Row(int y, int plane = 0) => Plane(plane).Slice(y * Stride, Width);
 
-    public void Dispose() => _buffer = null;
+    public void Dispose()
+    {
+        ((IDisposable?)_buffer)?.Dispose();
+        _buffer = null;
+    }
 }
